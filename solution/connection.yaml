@@ -1,0 +1,27 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Templates to define pipeline resources for servian TechChallengeApp
+
+Parameters:
+
+  ProjectName:
+    Description: Name of the Project
+    Type: String
+
+Resources:
+
+  GitHubConnection:
+    Type: 'AWS::CodeStarConnections::Connection'
+    Properties:
+      ConnectionName: MyGitHubConnection
+      ProviderType: GitHub
+      Tags:
+        - Key: Project
+          Value: !Sub ${ProjectName}
+
+Outputs:
+  
+  GitHubConnectionARN:
+    Description: "ARN of new Git Hub Connection"
+    Value: !GetAtt GitHubConnection.ConnectionArn
+    Export:
+      Name: !Sub ${AWS::StackName}::GitHubConnectionARN

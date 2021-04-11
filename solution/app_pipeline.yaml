@@ -1,0 +1,463 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Templates to define pipeline resources for servian TechChallengeApp
+
+Parameters:
+
+  ProjectName:
+    Description: Name of the Project
+    Type: String
+
+  RepositoryName:
+    Description: GitHub repository name
+    Type: String
+
+  BranchName:
+    Description: GitHub branch name
+    Type: String
+
+Resources:
+
+  ArtifactBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+    UpdateReplacePolicy: Delete
+    DeletionPolicy: Delete
+
+  pipelineActionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${ProjectName}-pipeline-action
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              AWS:
+                - !Sub arn:aws:iam::${AWS::AccountId}:root
+        Version: "2012-10-17"
+      MaxSessionDuration: 7200
+      Policies:
+        - PolicyDocument:
+            Statement:
+              - Action:
+                  - codebuild:BatchGetBuilds
+                  - codebuild:StartBuild
+                  - codebuild:StopBuild
+                Effect: Allow
+                Resource:
+                  Fn::Join:
+                    - ""
+                    - - "arn:aws:codebuild:"
+                      - Ref: AWS::Region
+                      - ":"
+                      - Ref: AWS::AccountId
+                      - :project/*
+              - Action:
+                  - s3:GetObject*
+                  - s3:GetBucket*
+                  - s3:List*
+                  - s3:DeleteObject*
+                  - s3:PutObject*
+                  - s3:Abort*
+                Effect: Allow
+                Resource:
+                  - Fn::GetAtt:
+                      - ArtifactBucket
+                      - Arn
+                  - Fn::Join:
+                      - ""
+                      - - Fn::GetAtt:
+                            - ArtifactBucket
+                            - Arn
+                        - /*
+              - Action:
+                  - codecommit:GetBranch
+                  - codecommit:GetCommit
+                  - codecommit:UploadArchive
+                  - codecommit:GetUploadArchiveStatus
+                  - codecommit:CancelUploadArchive
+                Effect: Allow
+                Resource:
+                  Fn::Join:
+                    - ""
+                    - - "arn:aws:codecommit:"
+                      - Ref: AWS::Region
+                      - ":"
+                      - Ref: AWS::AccountId
+                      - :*
+            Version: "2012-10-17"
+          PolicyName: "pipelineActionRolePolicy"
+
+  pipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${ProjectName}-pipeline
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+        Version: "2012-10-17"
+      MaxSessionDuration: 7200
+      Policies:
+        - PolicyDocument:
+            Statement:
+              - Action:
+                  - s3:GetObject*
+                  - s3:GetBucket*
+                  - s3:List*
+                  - s3:DeleteObject*
+                  - s3:PutObject*
+                  - s3:Abort*
+                Effect: Allow
+                Resource:
+                  - Fn::GetAtt:
+                      - ArtifactBucket
+                      - Arn
+                  - Fn::Join:
+                      - ""
+                      - - Fn::GetAtt:
+                            - ArtifactBucket
+                            - Arn
+                        - /*
+              - Action: sts:AssumeRole
+                Effect: Allow
+                Resource:
+                  Fn::GetAtt:
+                    - pipelineActionRole
+                    - Arn
+              - Action: codestar-connections:UseConnection
+                Effect: Allow
+                Resource:
+                  - Fn::ImportValue: !Sub ${ProjectName}-connection::GitHubConnectionARN
+            Version: "2012-10-17"
+          PolicyName: "pipelineRole"
+
+  AppPipeline:
+    Type: 'AWS::CodePipeline::Pipeline'
+    Properties:
+      Name: !Sub ${ProjectName}-pipeline
+      RoleArn: !GetAtt pipelineRole.Arn
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: SourceAction
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Version: "1"
+                Provider: CodeStarSourceConnection
+              OutputArtifacts:
+                - Name: SourceOutput
+              Configuration:
+                ConnectionArn:
+                  Fn::ImportValue: !Sub ${ProjectName}-connection::GitHubConnectionARN
+                BranchName: !Ref BranchName
+                FullRepositoryId: !Ref RepositoryName
+                OutputArtifactFormat: "CODE_ZIP"
+                DetectChanges: True
+              RunOrder: 1
+        - Name: Build
+          Actions:
+            - Name: BuildAction-Approval
+              ActionTypeId:
+                Category: Approval
+                Owner: AWS
+                Version: "1"
+                Provider: Manual
+              RunOrder: 1
+            - Name: BuildAction-Build
+              InputArtifacts:
+                - Name: SourceOutput
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: "1"
+                Provider: CodeBuild
+              Configuration:
+                ProjectName: !Ref AppBuildProject
+              RoleArn: !GetAtt pipelineActionRole.Arn
+              RunOrder: 2
+            - Name: BuildAction-Debug-Build
+              InputArtifacts:
+                - Name: SourceOutput
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: "1"
+                Provider: CodeBuild
+              Configuration:
+                ProjectName: !Ref AppDebugBuildProject
+              RoleArn: !GetAtt pipelineActionRole.Arn
+              RunOrder: 2
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactBucket
+
+  CodeBuildRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: !Sub ${ProjectName}-build
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Path: /
+
+  CodeBuildPolicy:
+    Type: 'AWS::IAM::ManagedPolicy'
+    Properties:
+      Description: Policy with base permissions for CodeBuild
+      Path: /
+      Roles:
+        - !Ref CodeBuildRole
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - "logs:CreateLogGroup"
+              - "logs:PutLogEvents"
+              - "logs:CreateLogStream"
+            Resource:
+              - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/*"
+          - Effect: Allow
+            Action:
+              - "ecr:GetAuthorizationToken" 
+              - "ecr:BatchCheckLayerAvailability" 
+              - "ecr:GetDownloadUrlForLayer" 
+              - "ecr:GetRepositoryPolicy" 
+              - "ecr:DescribeRepositories" 
+              - "ecr:ListImages" 
+              - "ecr:DescribeImages" 
+              - "ecr:BatchGetImage" 
+              - "ecr:GetLifecyclePolicy" 
+              - "ecr:GetLifecyclePolicyPreview" 
+              - "ecr:ListTagsForResource" 
+              - "ecr:DescribeImageScanFindings" 
+              - "ecr:InitiateLayerUpload" 
+              - "ecr:UploadLayerPart" 
+              - "ecr:CompleteLayerUpload" 
+              - "ecr:PutImage"
+            Resource:
+              - "*"
+          - Effect: Allow
+            Action:
+              - 's3:GetObject'
+              - 's3:GetObjectVersion'
+              - 's3:GetBucketVersioning'
+              - 's3:PutObject'
+              - "s3:GetBucketAcl"
+              - "s3:GetBucketLocation"
+            Resource:
+              - !GetAtt ArtifactBucket.Arn
+              - !Sub "${ArtifactBucket.Arn}/*"
+          # - Effect: Allow
+          #   Action:
+          #     - 'kms:Encrypt'
+          #     - 'kms:Decrypt'
+          #     - 'kms:ReEncrypt*'
+          #     - 'kms:GenerateDataKey*'
+          #     - 'kms:DescribeKey'
+          #   Resource: !GetAtt KMSKey.Arn
+          # - Effect: Allow  #For allowing CodeBuild to Access Secrets Manager to retrieve Private SSH key. If a custom KMS key is used, please add the ARN in the Resource section
+          #   Action:
+          #     - 'kms:Encrypt'
+          #     - 'kms:Decrypt'
+          #     - 'kms:ReEncrypt*'
+          #     - 'kms:GenerateDataKey*'
+          #     - 'kms:DescribeKey'
+          #   Resource: !Sub "arn:aws:kms:${AWS::Region}:${AWS::AccountId}:alias/aws/secretsmanager"
+
+  ImageRepo:
+    Type: 'AWS::ECR::Repository'
+    Properties:
+      RepositoryPolicyText:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowPushToRepo
+            Effect: Allow
+            Principal:
+              AWS:
+                - !Sub arn:aws:iam::${AWS::AccountId}:root #!Sub arn:aws:iam::${AWS::AccountId}:role/${ProjectName}-build
+            Action:
+              - 'ecr:PutImage'
+              - 'ecr:InitiateLayerUpload'
+              - 'ecr:UploadLayerPart'
+              - 'ecr:CompleteLayerUpload'
+          - Sid: AllowPullFromRepo
+            Effect: Allow
+            Principal:
+              AWS:
+                - !Sub arn:aws:iam::${AWS::AccountId}:root
+            Action:
+              - 'ecr:GetDownloadUrlForLayer'
+              - 'ecr:BatchGetImage'
+              - 'ecr:BatchCheckLayerAvailability'
+              - 'ecr:GetRepositoryPolicy'
+
+  DebugImageRepo:
+    Type: 'AWS::ECR::Repository'
+    Properties:
+      RepositoryPolicyText:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowPushToRepo
+            Effect: Allow
+            Principal:
+              AWS:
+                - !Sub arn:aws:iam::${AWS::AccountId}:root #!Sub arn:aws:iam::${AWS::AccountId}:role/${ProjectName}-build
+            Action:
+              - 'ecr:PutImage'
+              - 'ecr:InitiateLayerUpload'
+              - 'ecr:UploadLayerPart'
+              - 'ecr:CompleteLayerUpload'
+          - Sid: AllowPullFromRepo
+            Effect: Allow
+            Principal:
+              AWS:
+                - !Sub arn:aws:iam::${AWS::AccountId}:root
+            Action:
+              - 'ecr:GetDownloadUrlForLayer'
+              - 'ecr:BatchGetImage'
+              - 'ecr:BatchCheckLayerAvailability'
+              - 'ecr:GetRepositoryPolicy'
+
+  AppBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub ${ProjectName}-Build
+      Description: "Build Project to publish Container Image to ECR"
+      # EncryptionKey: 
+      #   Fn::ImportValue: !Sub ${ProjectName}-kms::CMK
+      ServiceRole: !Ref CodeBuildRole
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment: 
+        Type: LINUX_CONTAINER
+        Image: aws/codebuild/standard:2.0 #image tag or image digest
+        ComputeType: BUILD_GENERAL1_SMALL
+        EnvironmentVariables: 
+          - Type: PLAINTEXT
+            Name: AWS_ACCOUNT_ID
+            Value: !Ref AWS::AccountId
+          - Type: PLAINTEXT
+            Name: AWS_DEFAULT_REGION
+            Value: !Ref AWS::Region
+          - Type: PLAINTEXT
+            Name: IMAGE_REPO
+            Value: !Ref ImageRepo
+          - Type: PLAINTEXT
+            Name: DOCKERFILE
+            Value: Dockerfile
+        ImagePullCredentialsType: CODEBUILD
+        PrivilegedMode: true
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: |
+              version: 0.2
+              phases:
+                pre_build:
+                    commands:
+                      - echo "pre_build Phase Started:" `date`
+                      - $(aws ecr get-login --no-include-email --region $AWS_DEFAULT_REGION)
+                      - echo "pre_build Phase Completed:" `date`
+                build:
+                    commands:
+                      - echo "Build Phase Started:" `date`
+                      - echo "Building the Docker image ... from Source:" $CODEBUILD_RESOLVED_SOURCE_VERSION
+                      - docker build -t $IMAGE_REPO:latest -f $DOCKERFILE .
+                      - echo "Build Phase Completed:" `date`
+                post_build:
+                    commands:
+                      - echo "post_build Phase Started:" `date`
+                      - docker tag $IMAGE_REPO:latest $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_REPO:latest
+                      - echo "Pushing the Docker image to ECR..."
+                      - docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_REPO:latest
+                      - echo "post_build Phase Completed:" `date`
+
+  AppDebugBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub ${ProjectName}-Debug-Build
+      Description: "Build Project to publish Debug Container Image to ECR"
+      # EncryptionKey: 
+      #   Fn::ImportValue: !Sub ${ProjectName}-kms::CMK
+      ServiceRole: !Ref CodeBuildRole
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment: 
+        Type: LINUX_CONTAINER
+        Image: aws/codebuild/standard:2.0 #image tag or image digest
+        ComputeType: BUILD_GENERAL1_SMALL
+        EnvironmentVariables: 
+          - Type: PLAINTEXT
+            Name: AWS_ACCOUNT_ID
+            Value: !Ref AWS::AccountId
+          - Type: PLAINTEXT
+            Name: AWS_DEFAULT_REGION
+            Value: !Ref AWS::Region
+          - Type: PLAINTEXT
+            Name: IMAGE_REPO
+            Value: !Ref DebugImageRepo
+          - Type: PLAINTEXT
+            Name: DOCKERFILE
+            Value: debug/Dockerfile
+        ImagePullCredentialsType: CODEBUILD
+        PrivilegedMode: true
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: |
+              version: 0.2
+              phases:
+                pre_build:
+                    commands:
+                      - echo "pre_build Phase Started:" `date`
+                      - $(aws ecr get-login --no-include-email --region $AWS_DEFAULT_REGION)
+                      - echo "pre_build Phase Completed:" `date`
+                build:
+                    commands:
+                      - echo "Build Phase Started:" `date`
+                      - echo "Building the Docker image ... from Source:" $CODEBUILD_RESOLVED_SOURCE_VERSION
+                      - docker build -t $IMAGE_REPO:latest -f $DOCKERFILE .
+                      - echo "Build Phase Completed:" `date`
+                post_build:
+                    commands:
+                      - echo "post_build Phase Started:" `date`
+                      - docker tag $IMAGE_REPO:latest $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_REPO:latest
+                      - echo "Pushing the Docker image to ECR..."
+                      - docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_REPO:latest
+                      - echo "post_build Phase Completed:" `date`
+
+Outputs:
+
+  ArtifactBucket:
+    Description: Artifact Bucket for the Pipeline
+    Value: !Ref ArtifactBucket
+    Export:
+      Name: !Sub ${AWS::StackName}::ArtifactBucket
+
+  ImageRepo:
+    Description: ECR Image Repository
+    Value: !Ref ImageRepo
+    Export:
+      Name: !Sub ${AWS::StackName}::ImageRepo
+
+  DebugImageRepo:
+    Description: ECR Image Repository
+    Value: !Ref DebugImageRepo
+    Export:
+      Name: !Sub ${AWS::StackName}::DebugImageRepo

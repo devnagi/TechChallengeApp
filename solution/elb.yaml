@@ -1,0 +1,131 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Create Internet facing Application Load Balancer.
+
+Parameters:
+  
+  ProjectName:
+    Description: Name of the Project
+    Type: String
+
+Resources:
+
+  ELBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: ALB access to http #      GroupName: !Join [ '-', [!Ref ProjectName, 'elb-sg'] ]
+      SecurityGroupIngress:
+        - CidrIp: 0.0.0.0/0
+          IpProtocol: "TCP"
+          FromPort: 80
+          ToPort: 80
+        - CidrIp: 0.0.0.0/0
+          IpProtocol: "TCP"
+          FromPort: 3000
+          ToPort: 3000
+        # - CidrIp: 172.31.0.0/16
+        #   IpProtocol: "-1"
+        #   FromPort: 0
+        #   ToPort: 0
+      VpcId: 
+        vpc-b633d3d0 #        Fn::ImportValue: !Sub ${ProjectName}-vpc::VpcId
+      Tags:
+        - Key: "Name"
+          Value: "ALB Security Group"
+        - Key: "Project" 
+          Value: !Sub ${ProjectName}
+
+  AppSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: WebApp in public subnet #      GroupName: !Join [ '-', [!Ref ProjectName, 'web-sg'] ]
+      SecurityGroupIngress:
+        - SourceSecurityGroupId: !Ref ELBSecurityGroup
+          IpProtocol: "TCP"
+          FromPort: 1 #!Ref Port
+          ToPort: 65535 #!Ref Port
+        - CidrIp: 0.0.0.0/0
+          IpProtocol: "TCP"
+          FromPort: 80
+          ToPort: 80
+        - CidrIp: 0.0.0.0/0
+          IpProtocol: "TCP"
+          FromPort: 3000
+          ToPort: 3000
+      VpcId:
+        vpc-b633d3d0 #        Fn::ImportValue: !Sub ${ProjectName}-vpc::VpcId
+      Tags:
+        - Key: "Name"
+          Value: "APP Security Group"
+        - Key: "Project" 
+          Value: !Sub ${ProjectName}
+
+  AppLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties: #      Name: !Join [ '-', [!Ref ProjectName, 'app-elb'] ]
+      Subnets:
+        - subnet-6d844125 #        - Fn::ImportValue: !Sub ${ProjectName}-vpc::PublicSubnet1
+        - subnet-fe01c998 #        - Fn::ImportValue: !Sub ${ProjectName}-vpc::PublicSubnet2
+      SecurityGroups: 
+        - !Ref ELBSecurityGroup
+      Type: application
+      Scheme: internet-facing
+      Tags:
+        - Key: "Name"
+          Value: !Join [ '-', [!Ref ProjectName, 'app-elb'] ]
+        - Key: "Project" 
+          Value: !Ref ProjectName
+
+  Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties: 
+      LoadBalancerArn: !Ref AppLoadBalancer
+      Port: 3000 #!Ref LPort
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref AppTargetGroup
+
+  AppTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      # HealthCheckIntervalSeconds: 30
+      # HealthCheckProtocol: HTTP
+      # HealthCheckTimeoutSeconds: 10
+      # HealthyThresholdCount: 3
+      # HealthCheckPath: /healthcheck/ #      Name: !Join [ '-', [!Ref ProjectName, 'web-app-tg'] ]
+      Port: 80 # !Ref TGPort
+      TargetType: ip # Relates to FARGATE Task Def Network Mode: awsvpc
+      Protocol: HTTP #      UnhealthyThresholdCount: 3
+      VpcId: 
+        vpc-b633d3d0 #        Fn::ImportValue: !Sub ${ProjectName}-vpc::VpcId
+      Tags:
+        - Key: "Name"
+          Value: "APP Target Group"
+        - Key: "Project" 
+          Value: !Ref ProjectName
+
+Outputs:
+
+  ELBSecurityGroup:
+    Value: !Ref ELBSecurityGroup
+    Description: ALB Security Group
+    Export:
+      Name: !Sub ${AWS::StackName}::ELBSecurityGroup
+
+  AppLoadBalancerARN:
+    Value: !Ref AppLoadBalancer
+    Description: ALB ARN
+    Export:
+      Name: !Sub ${AWS::StackName}::AppLoadBalancerARN
+
+  TargetGroup:
+    Value: !Ref AppTargetGroup
+    Description: Target Group for ALB
+    Export:
+      Name: !Sub ${AWS::StackName}::AppTargetGroup
+
+  AppSecurityGroup:
+    Description: Security Group of the Service in ECS Cluster
+    Value: !Ref  AppSecurityGroup
+    Export:
+      Name: !Sub ${AWS::StackName}::AppSecurityGroup
