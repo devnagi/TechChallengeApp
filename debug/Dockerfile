@@ -1,6 +1,6 @@
 FROM alpine:3.12.0
 
-RUN apk add --no-cache tcpdump && \
+RUN apk add --no-cache openssh tcpdump && \
   apk add --no-cache --repository http://dl-3.alpinelinux.org/alpine/edge/community/ aws-cli
 
 ADD debug/entrypoint.sh /files/
