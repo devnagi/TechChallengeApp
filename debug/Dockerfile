@@ -1,6 +1,13 @@
 FROM alpine:3.12.0
 
-RUN apk add --no-cache openssh tcpdump && \
+RUN tail /etc/apk/repositories
+
+RUN echo '@edge http://dl-cdn.alpinelinux.org/alpine/edge/testing' >> /etc/apk/repositories && \
+  apk update
+
+RUN tail /etc/apk/repositories
+
+RUN apk add --no-cache openssh tcpdump curl mtr nmap nmap-nping bind-tools nginx stress-ng jq apparmor@edge && \
   apk add --no-cache --repository http://dl-3.alpinelinux.org/alpine/edge/community/ aws-cli
 
 ADD debug/entrypoint.sh /files/
