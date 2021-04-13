@@ -5,8 +5,17 @@ RUN apk add --no-cache tcpdump && \
 
 ADD debug/entrypoint.sh /files/
 
+# Installing/Configuring SSH for access
+RUN ssh-keygen -f /etc/ssh/ssh_host_rsa_key -N '' -t rsa && \
+  ssh-keygen -f /etc/ssh/ssh_host_dsa_key -N '' -t dsa && \
+  ssh-keygen -f /etc/ssh/ssh_host_ecdsa_key -N '' -t ecdsa && \
+  ssh-keygen -f /etc/ssh/ssh_host_ed25519_key -N '' -t ed25519 && \
+  sed -i "s/#Port 22/Port 8022/" /etc/ssh/sshd_config && \
+  mkdir /root/.ssh && \
+# Temporary hack to ensure ssh keys still work
+  passwd -d root && \
 # Configure the importing of all environment variables from pid 1 to make use of the ECS specific environment variables(Task Roles) for the awscli
-RUN echo 'export $(strings /proc/1/environ)' > /root/.profile && \
+  echo 'export $(strings /proc/1/environ)' > /root/.profile && \
 # Changing the motd to remember the above configuration
   printf '\n\nNOTICE: export $(strings /proc/1/environ) is run on the ash shell profile which makes the aws cli work with Task Roles.\nc' > /etc/motd
 

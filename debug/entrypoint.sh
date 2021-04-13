@@ -15,6 +15,6 @@ if [ ! -z ${TCPDUMP_BUCKET+x} ] ; then
 
 else
 
-  echo "Please define variables: TCPDUMP_BUCKET, INTERFACE, PKT_COUNT, FILTER, pcap, "
+  echo "Please define mandatory variables: TCPDUMP_BUCKET, INTERFACE and PKT_COUNT"
 
 fi
